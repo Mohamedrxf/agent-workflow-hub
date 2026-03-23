@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
@@ -19,13 +19,22 @@ const queryClient = new QueryClient();
 
 function AppLayout() {
   const [loginOpen, setLoginOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && loginOpen) setLoginOpen(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [loginOpen]);
 
   return (
     <>
       <AppHeader onLoginClick={() => setLoginOpen(true)} />
-      <AppSidebar />
+      <AppSidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
       <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
-      <main className="pt-14 pl-56 transition-all duration-300 min-h-screen">
+      <main className={`pt-14 transition-all duration-300 min-h-screen ${sidebarCollapsed ? 'pl-16' : 'pl-56'}`}>
         <div className="p-6 max-w-[1400px] mx-auto">
           <Routes>
             <Route path="/" element={<Dashboard />} />

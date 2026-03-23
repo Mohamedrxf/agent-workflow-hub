@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Play, CheckSquare, Activity, FileText, Settings,
@@ -15,21 +14,18 @@ const NAV_ITEMS = [
   { icon: Settings, label: 'Settings', path: '#', disabled: true },
 ];
 
-export function AppSidebar() {
-  const [collapsed, setCollapsed] = useState(false);
+export function AppSidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const location = useLocation();
   const navigate = useNavigate();
 
   return (
     <aside className={`fixed top-14 left-0 bottom-0 z-30 border-r bg-card transition-all duration-300 flex flex-col ${collapsed ? 'w-16' : 'w-56'}`}>
-      {/* Version */}
       {!collapsed && (
         <div className="px-4 py-3 border-b">
           <span className="text-xs font-mono text-muted-foreground">v2.4 Enterprise</span>
         </div>
       )}
 
-      {/* Nav */}
       <nav className="flex-1 py-2 space-y-0.5 px-2">
         {NAV_ITEMS.map(item => {
           const isActive = location.pathname === item.path;
@@ -62,7 +58,6 @@ export function AppSidebar() {
         })}
       </nav>
 
-      {/* Bottom */}
       <div className="border-t p-3 space-y-2">
         {!collapsed && (
           <>
@@ -77,7 +72,7 @@ export function AppSidebar() {
           </>
         )}
         <button
-          onClick={() => setCollapsed(!collapsed)}
+          onClick={onToggle}
           className="w-full flex items-center justify-center rounded-lg py-1.5 text-muted-foreground hover:bg-secondary transition"
         >
           {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
