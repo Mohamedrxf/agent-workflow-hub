@@ -3,6 +3,8 @@ import { Zap, User, Menu, X, LayoutDashboard, Play, CheckSquare, Activity, FileT
 import { useLocation, useNavigate } from 'react-router-dom';
 import { ThemeToggle } from './ThemeToggle';
 import { TASKS_DATA } from '@/data/mockData';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { useAuth } from '@/contexts/AuthContext';
 
 const NAV_ITEMS = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/' },
@@ -13,9 +15,10 @@ const NAV_ITEMS = [
   { icon: Settings, label: 'Settings', path: '#', disabled: true },
 ];
 
-export function AppHeader({ onLoginClick }: { onLoginClick: () => void }) {
+export function AppHeader() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
 
   return (
@@ -47,16 +50,20 @@ export function AppHeader({ onLoginClick }: { onLoginClick: () => void }) {
               System Active
             </div>
             <ThemeToggle />
-            <button
-              onClick={onLoginClick}
-              className="hidden sm:flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium hover:bg-secondary transition"
-            >
-              <User className="h-4 w-4" />
-              Login
-            </button>
-            <div className="h-8 w-8 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-xs font-bold text-primary-foreground">
-              AM
-            </div>
+            {user && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <div className="h-8 w-8 rounded-full bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center text-xs font-bold text-primary-foreground cursor-pointer">
+                    {user.name?.[0]?.toUpperCase() || 'U'}
+                  </div>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => navigate('/profile')}>Profile</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => navigate('/settings')}>Settings</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { logout(); navigate('/login'); }}>Logout</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
         </div>
       </header>
