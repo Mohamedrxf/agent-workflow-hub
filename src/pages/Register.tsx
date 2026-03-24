@@ -6,6 +6,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { AuthInput } from "@/components/AuthInput";
 import { AuthButton } from "@/components/AuthButton";
 import { useAuth } from "@/contexts/AuthContext";
+import Toast from "../components/Toast";
 
 export const Register: React.FC = () => {
   const [name, setName] = useState("");
@@ -13,8 +14,12 @@ export const Register: React.FC = () => {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState<{
+    message: string;
+    subMessage: string;
+    type: "success" | "error";
+  } | null>(null);
 
   const navigate = useNavigate();
   const { signup, isAuthenticated } = useAuth();
@@ -42,18 +47,36 @@ export const Register: React.FC = () => {
     }
 
     setLoading(true);
-    const { error } = await signup(email, password, name); // ← added name here
+    const { error } = await signup(email, password, name);
+
     if (error) {
-      setError(error);
       setLoading(false);
+      if (
+        error.toLowerCase().includes("already") ||
+        error.toLowerCase().includes("registered") ||
+        error.toLowerCase().includes("exists")
+      ) {
+        setToast({
+          type: "error",
+          message: "User already exists.",
+          subMessage: "Proceed to Login now.",
+        });
+      } else {
+        setError(error);
+      }
       return;
     }
 
-    setSuccess(true);
     setLoading(false);
+    setToast({
+      type: "success",
+      message: "Registered successfully!",
+      subMessage: "You may proceed with Login.",
+    });
+
     setTimeout(() => {
       navigate("/login");
-    }, 2000);
+    }, 2500);
   };
 
   const containerVariants: Variants = {
@@ -79,6 +102,16 @@ export const Register: React.FC = () => {
       {/* Background glow effect */}
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-purple-500/20 rounded-full blur-3xl opacity-30 animate-pulse"></div>
       <div className="absolute bottom-0 right-0 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl opacity-20"></div>
+
+      {/* Toast notification */}
+      {toast && (
+        <Toast
+          message={toast.message}
+          subMessage={toast.subMessage}
+          type={toast.type}
+          onClose={() => setToast(null)}
+        />
+      )}
 
       <motion.div
         variants={containerVariants}
@@ -184,36 +217,6 @@ export const Register: React.FC = () => {
               >
                 {error}
               </motion.div>
-            )}
-
-            {/* Success message popup */}
-            {success && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none">
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  className="bg-emerald-500 text-white font-medium px-6 py-4 rounded-xl shadow-[0_0_30px_rgba(16,185,129,0.5)] border border-emerald-400 pointer-events-auto"
-                >
-                  <div className="flex items-center gap-3">
-                    <svg
-                      className="w-6 h-6 text-white"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M5 13l4 4L19 7"
-                      />
-                    </svg>
-                    <span>
-                      Registered successfully! Redirecting to login...
-                    </span>
-                  </div>
-                </motion.div>
-              </div>
             )}
 
             <motion.div
