@@ -12,6 +12,7 @@ interface AuthContextType {
   signup: (
     email: string,
     password: string,
+    fullName: string,
   ) => Promise<{ error: string | null }>;
   logout: () => Promise<void>;
 }
