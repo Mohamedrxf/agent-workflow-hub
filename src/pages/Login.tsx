@@ -183,7 +183,7 @@ export const Login: React.FC = () => {
             <AuthButton
               label={googleLoading ? "Redirecting..." : "Continue with Google"}
               onClick={handleGoogleLogin}
-              variant="secondary"
+              variant="outline"
               disabled={loading || googleLoading}
               icon={
                 <svg

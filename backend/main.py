@@ -1,7 +1,7 @@
 """
 main.py — AutoOps FastAPI server
 """
-
+import httpx
 import logging
 from contextlib import asynccontextmanager
 
@@ -77,6 +77,37 @@ class RunWorkflowRequest(BaseModel):
     transcript: str
     metadata:   dict = {}
 
+# ── New schemas for meetings, transcripts, commitments ──────────────────────
+
+class CreateMeetingRequest(BaseModel):
+    title:        str
+    user_id:      str
+    platform:     str = None
+    meet_link:    str = None
+    scheduled_at: str = None
+    attendees:    list = []
+
+class UpdateMeetingRequest(BaseModel):
+    status:     str = None
+    started_at: str = None
+    ended_at:   str = None
+
+class SaveTranscriptRequest(BaseModel):
+    meeting_id: str
+    raw_text:   str
+
+class CreateCommitmentRequest(BaseModel):
+    meeting_id:       str
+    person_name:      str
+    amount:           float = None
+    currency:         str = "USD"
+    purpose:          str = None
+    deadline:         str = None
+    confidence_score: float = None
+
+class UpdateCommitmentRequest(BaseModel):
+    status:       str
+    escalated_to: str = None
 
 class UpdateTaskRequest(BaseModel):
     status:   str = None
@@ -93,6 +124,97 @@ async def health():
     sync = await db.get_sync_status()
     return {"status": "ok", "db_sync": sync}
 
+# ── MEETINGS ─────────────────────────────────────────────────────────────────
+
+@app.post("/meetings")
+async def create_meeting(req: CreateMeetingRequest):
+    meeting = await db.create_meeting(
+        title=req.title,
+        user_id=req.user_id,
+        platform=req.platform,
+        meet_link=req.meet_link,
+        scheduled_at=req.scheduled_at,
+        attendees=req.attendees,
+    )
+    return meeting
+
+@app.get("/meetings")
+async def list_meetings(user_id: str = None):
+    meetings = await db.list_meetings(user_id=user_id)
+    return {"meetings": meetings, "count": len(meetings)}
+
+@app.patch("/meetings/{meeting_id}")
+async def update_meeting(meeting_id: str, req: UpdateMeetingRequest):
+    updates = req.model_dump(exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    await db.update_meeting(meeting_id, **updates)  # reuses same update pattern
+    return {"meeting_id": meeting_id, "updated": updates}
+
+# ── TRANSCRIPTS ───────────────────────────────────────────────────────────────
+
+@app.post("/transcripts")
+async def save_transcript(req: SaveTranscriptRequest, background_tasks: BackgroundTasks):
+    transcript = await db.save_transcript(
+        meeting_id=req.meeting_id,
+        raw_text=req.raw_text,
+    )
+
+    # Trigger n8n financial agent webhook in background
+    background_tasks.add_task(
+        _trigger_n8n,
+        req.meeting_id,
+        req.raw_text,
+    )
+
+    return {"status": "saved", "transcript_id": transcript["id"]}
+
+@app.get("/transcripts/{meeting_id}")
+async def get_transcript(meeting_id: str):
+    # reuse existing _sb_select pattern via db
+    from db import _sb_select, SQLITE_PATH
+    import aiosqlite
+    online = await db.get_sync_status()
+    if online["supabase_online"]:
+        rows = await _sb_select("transcripts", {"meeting_id": meeting_id})
+        if rows:
+            return {"transcripts": rows}
+    async with aiosqlite.connect(SQLITE_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cur = await conn.execute(
+            "SELECT * FROM transcripts WHERE meeting_id=?", (meeting_id,)
+        )
+        rows = await cur.fetchall()
+        return {"transcripts": [dict(r) for r in rows]}
+
+# ── COMMITMENTS ───────────────────────────────────────────────────────────────
+
+@app.post("/commitments")
+async def create_commitment(req: CreateCommitmentRequest):
+    commitment = await db.create_commitment(
+        meeting_id=req.meeting_id,
+        person_name=req.person_name,
+        amount=req.amount,
+        currency=req.currency,
+        purpose=req.purpose,
+        deadline=req.deadline,
+        confidence_score=req.confidence_score,
+    )
+    return commitment
+
+@app.get("/commitments")
+async def get_commitments(meeting_id: str = None):
+    commitments = await db.get_commitments(meeting_id=meeting_id)
+    return {"commitments": commitments, "count": len(commitments)}
+
+@app.patch("/commitments/{commitment_id}")
+async def update_commitment(commitment_id: str, req: UpdateCommitmentRequest):
+    await db.update_commitment_status(
+        commitment_id=commitment_id,
+        status=req.status,
+        escalated_to=req.escalated_to,
+    )
+    return {"commitment_id": commitment_id, "status": req.status}
 
 @app.post("/run-workflow")
 async def api_run_workflow(
@@ -121,6 +243,20 @@ async def api_run_workflow(
         "message":     "Pipeline started"
     }
 
+async def _trigger_n8n(meeting_id: str, transcript: str):
+    """Fire n8n webhook after transcript is saved"""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(
+                "http://localhost:5678/webhook/transcript-ready",
+                json={
+                    "meeting_id": meeting_id,
+                    "transcript": transcript
+                }
+            )
+        logger.info(f"n8n webhook triggered for meeting {meeting_id}")
+    except Exception as e:
+        logger.error(f"n8n trigger failed: {e}")
 
 async def _run_and_catch(workflow_id: str, transcript: str, title: str):
     """Wrapper so background task errors are logged cleanly."""
