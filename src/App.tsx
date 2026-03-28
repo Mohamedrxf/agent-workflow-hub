@@ -40,8 +40,8 @@ function AppLayout() {
   return (
     <>
       {!isAuthPage && <AppHeader />}
-      <main className="pt-14 min-h-screen">
-        <div className="p-6 max-w-[1400px] mx-auto">
+      <main className={isAuthPage ? "" : "pt-14 min-h-screen"}>
+        <div className={isAuthPage ? "" : "p-6 max-w-[1400px] mx-auto"}>
           <Routes>
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />

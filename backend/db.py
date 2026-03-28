@@ -80,6 +80,58 @@ CREATE TABLE IF NOT EXISTS workflows (
     synced      INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS meetings (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT,
+    title       TEXT NOT NULL,
+    platform    TEXT,
+    meet_link   TEXT,
+    scheduled_at TEXT,
+    started_at  TEXT,
+    ended_at    TEXT,
+    attendees   TEXT DEFAULT '[]',
+    status      TEXT DEFAULT 'scheduled',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    synced      INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS transcripts (
+    id          TEXT PRIMARY KEY,
+    meeting_id  TEXT NOT NULL,
+    raw_text    TEXT NOT NULL,
+    processed   INTEGER DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    synced      INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS commitments (
+    id              TEXT PRIMARY KEY,
+    meeting_id      TEXT NOT NULL,
+    person_name     TEXT NOT NULL,
+    amount          REAL,
+    currency        TEXT DEFAULT 'USD',
+    purpose         TEXT,
+    deadline        TEXT,
+    status          TEXT DEFAULT 'pending',
+    confidence_score REAL,
+    escalated_to    TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    synced          INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT,
+    meeting_id  TEXT,
+    message     TEXT NOT NULL,
+    type        TEXT,
+    read        INTEGER DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    synced      INTEGER DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id          TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL,
@@ -324,6 +376,27 @@ class DB:
 
         wf["metadata"] = metadata or {}
         return wf
+
+    async def update_meeting(self, meeting_id: str, **kwargs):
+        kwargs["updated_at"] = _now()
+        kwargs["synced"] = 0
+
+        set_clause = ", ".join(f"{k}=?" for k in kwargs)
+        vals = list(kwargs.values()) + [meeting_id]
+
+        async with aiosqlite.connect(SQLITE_PATH) as db:
+            await db.execute(
+                f"UPDATE meetings SET {set_clause} WHERE id=?", vals
+            )
+            await db.commit()
+
+        sb_payload = {k: v for k, v in kwargs.items() if k != "synced"}
+        online = await check_supabase_health()
+        if online:
+            await _sb_update("meetings", meeting_id, sb_payload)
+        else:
+            await _enqueue_sync("meetings", meeting_id, "UPDATE", sb_payload)
+
 
     async def update_workflow_status(self, workflow_id: str, status: str):
         now = _now()
@@ -596,7 +669,165 @@ class DB:
             "sqlite_path":       SQLITE_PATH,
             "last_health_check": _last_health_check,
         }
+    # ── MEETINGS ───────────────────────────────────────────────────────────────
+async def create_meeting(self, title: str, user_id: str, platform: str = None,
+                          meet_link: str = None, scheduled_at: str = None,
+                          attendees: list = None) -> dict:
+    meeting = {
+        "id":           str(uuid4()),
+        "user_id":      user_id,
+        "title":        title,
+        "platform":     platform or "",
+        "meet_link":    meet_link or "",
+        "scheduled_at": scheduled_at or "",
+        "started_at":   "",
+        "ended_at":     "",
+        "attendees":    json.dumps(attendees or []),
+        "status":       "scheduled",
+        "created_at":   _now(),
+        "updated_at":   _now(),
+        "synced":       0,
+    }
+    async with aiosqlite.connect(SQLITE_PATH) as db:
+        await db.execute(
+            """INSERT INTO meetings
+               (id, user_id, title, platform, meet_link, scheduled_at,
+                started_at, ended_at, attendees, status, created_at, updated_at, synced)
+               VALUES (:id, :user_id, :title, :platform, :meet_link, :scheduled_at,
+                       :started_at, :ended_at, :attendees, :status,
+                       :created_at, :updated_at, :synced)""", meeting)
+        await db.commit()
 
+    sb_payload = {**meeting, "attendees": attendees or []}
+    online = await check_supabase_health()
+    if online:
+        await _sb_upsert("meetings", sb_payload)
+    else:
+        await _enqueue_sync("meetings", meeting["id"], "UPSERT", sb_payload)
+
+    meeting["attendees"] = attendees or []
+    return meeting
+
+async def list_meetings(self, user_id: str = None) -> list:
+    online = await check_supabase_health()
+    if online:
+        filters = {"user_id": user_id} if user_id else {}
+        rows = await _sb_select("meetings", filters)
+        if rows is not None:
+            return rows
+
+    async with aiosqlite.connect(SQLITE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = "SELECT * FROM meetings ORDER BY created_at DESC"
+        cur = await db.execute(query)
+        rows = await cur.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["attendees"] = json.loads(d.get("attendees") or "[]")
+            result.append(d)
+        return result
+
+# ── TRANSCRIPTS ────────────────────────────────────────────────────────────
+async def save_transcript(self, meeting_id: str, raw_text: str) -> dict:
+    transcript = {
+        "id":         str(uuid4()),
+        "meeting_id": meeting_id,
+        "raw_text":   raw_text,
+        "processed":  0,
+        "created_at": _now(),
+        "synced":     0,
+    }
+    async with aiosqlite.connect(SQLITE_PATH) as db:
+        await db.execute(
+            """INSERT INTO transcripts (id, meeting_id, raw_text, processed, created_at, synced)
+               VALUES (:id, :meeting_id, :raw_text, :processed, :created_at, :synced)""",
+            transcript)
+        await db.commit()
+
+    online = await check_supabase_health()
+    if online:
+        await _sb_upsert("transcripts", transcript)
+    else:
+        await _enqueue_sync("transcripts", transcript["id"], "UPSERT", transcript)
+
+    return transcript
+
+# ── COMMITMENTS ────────────────────────────────────────────────────────────
+async def create_commitment(self, meeting_id: str, person_name: str,
+                             amount: float = None, currency: str = "USD",
+                             purpose: str = None, deadline: str = None,
+                             confidence_score: float = None) -> dict:
+    commitment = {
+        "id":               str(uuid4()),
+        "meeting_id":       meeting_id,
+        "person_name":      person_name,
+        "amount":           amount,
+        "currency":         currency,
+        "purpose":          purpose or "",
+        "deadline":         deadline or "",
+        "status":           "pending",
+        "confidence_score": confidence_score,
+        "escalated_to":     "",
+        "created_at":       _now(),
+        "updated_at":       _now(),
+        "synced":           0,
+    }
+    async with aiosqlite.connect(SQLITE_PATH) as db:
+        await db.execute(
+            """INSERT INTO commitments
+               (id, meeting_id, person_name, amount, currency, purpose,
+                deadline, status, confidence_score, escalated_to,
+                created_at, updated_at, synced)
+               VALUES (:id, :meeting_id, :person_name, :amount, :currency,
+                       :purpose, :deadline, :status, :confidence_score,
+                       :escalated_to, :created_at, :updated_at, :synced)""",
+            commitment)
+        await db.commit()
+
+    online = await check_supabase_health()
+    if online:
+        await _sb_upsert("commitments", commitment)
+    else:
+        await _enqueue_sync("commitments", commitment["id"], "UPSERT", commitment)
+
+    return commitment
+
+async def get_commitments(self, meeting_id: str = None) -> list:
+    online = await check_supabase_health()
+    if online:
+        filters = {"meeting_id": meeting_id} if meeting_id else {}
+        rows = await _sb_select("commitments", filters)
+        if rows is not None:
+            return rows
+
+    async with aiosqlite.connect(SQLITE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if meeting_id:
+            cur = await db.execute(
+                "SELECT * FROM commitments WHERE meeting_id=? ORDER BY created_at",
+                (meeting_id,))
+        else:
+            cur = await db.execute(
+                "SELECT * FROM commitments ORDER BY created_at DESC")
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+async def update_commitment_status(self, commitment_id: str,
+                                    status: str, escalated_to: str = None):
+    now = _now()
+    async with aiosqlite.connect(SQLITE_PATH) as db:
+        await db.execute(
+            "UPDATE commitments SET status=?, escalated_to=?, updated_at=?, synced=0 WHERE id=?",
+            (status, escalated_to or "", now, commitment_id))
+        await db.commit()
+
+    payload = {"status": status, "updated_at": now, "escalated_to": escalated_to or ""}
+    online = await check_supabase_health()
+    if online:
+        await _sb_update("commitments", commitment_id, payload)
+    else:
+        await _enqueue_sync("commitments", commitment_id, "UPDATE", payload)
 
 # Singleton instance — import this everywhere
 db = DB()
